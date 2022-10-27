@@ -1,0 +1,48 @@
+variables:
+  DOCKER_IMAGE: <my_some_image>:<tag>
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+      changes:
+      - "*/debian/control"
+      - "*/debian/changelog"
+
+image: ${DOCKER_IMAGE}
+
+stages:
+  - build
+
+generate-deb-packages-ci:
+  stage: .pre
+  script:
+    - files=$(cd /builds/<my_gitlab_space>/debian-packages; git diff --diff-filter=d --name-only $CI_COMMIT_BEFORE_SHA $CI_COMMIT_SHA | grep 'debian\/control\|debian\/changelog' | sed -r 's/(^.*)\/debian\/(control|changelog)/\1/g' | sort | uniq)
+    - |
+      for i in $files; do
+        cat <<EOT >> .helm-gilab-ci.yml
+        deb-package-$i:
+          stage: build
+          image: ${DOCKER_IMAGE}
+          script:
+            - cd /builds/<my_gitlab_space>/debian-packages/$i
+            - export PKG_NAME=\$(grep 'Package:' debian/control | awk '{print \$2}')
+            - export ARCH=\$(grep 'Architecture:' debian/control | awk '{print \$2}')
+            - export PKG_VERSION=\$(head -1 debian/changelog | sed -r 's/.*\s\((.*)\)\s.*/\1/g')
+            - echo "Starting package build \${PKG_NAME}_\${PKG_VERSION}_\${ARCH}.deb"
+            - debuild -us -uc -b
+            - rsync -a ../\${PKG_NAME}_\${PKG_VERSION}_\${ARCH}.deb <apt_server>::tmp-deb/
+            - echo "debian-bullseye \${PKG_NAME}_\${PKG_VERSION}_\${ARCH}.deb" | nc <apt_server> 12222
+      EOT
+      done
+    - cat .helm-gilab-ci.yml
+  artifacts:
+    paths:
+      - .helm-gilab-ci.yml
+
+trigger-deb-packages:
+  stage: build
+  trigger:
+    strategy: depend
+    include:
+      - artifact: .helm-gilab-ci.yml
+        job: generate-deb-packages-ci
